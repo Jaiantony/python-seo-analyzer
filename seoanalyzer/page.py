@@ -2,16 +2,21 @@ import hashlib
 import json
 import os
 import re
-
+import bs4
+import requests
 from bs4 import BeautifulSoup
 from collections import Counter
 import lxml.html as lh
 from string import punctuation
 from urllib.parse import urlsplit
 from urllib3.exceptions import HTTPError
-
+import dns.resolver
 from seoanalyzer.http import http
 from seoanalyzer.stemmer import stem
+import urllib.robotparser
+import advertools as adv
+from fake_useragent import UserAgent
+from urllib.parse import urlparse
 
 # This list of English stop words is taken from the "Glasgow Information
 # Retrieval Group". The original list can be found at
@@ -78,13 +83,9 @@ ADDITIONAL_TAGS_XPATHS = {
     'canonical': '//link[@rel="canonical"]/@href',
     'alt_href': '//link[@rel="alternate"]/@href',
     'alt_hreflang': '//link[@rel="alternate"]/@hreflang',
-    'og_title': '//meta[@property="og:title"]/@content',
-    'og_desc': '//meta[@property="og:description"]/@content',
-    'og_url': '//meta[@property="og:url"]/@content',
-    'og_image': '//meta[@property="og:image"]/@content'
 }
 
-IMAGE_EXTENSIONS = set(['.img', '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.webp', '.avif',])
+IMAGE_EXTENSIONS = set(['.img', '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.webp', '.avif', ])
 
 
 class Page():
@@ -100,11 +101,17 @@ class Page():
         self.base_domain = urlsplit(base_domain)
         self.parsed_url = urlsplit(url)
         self.url = url
+        self.url_length = ''
+        self.url_status= ""
+        self.url_parameter_status=''
         self.analyze_headings = analyze_headings
         self.analyze_extra_tags = analyze_extra_tags
         self.title = ''
+        self.title_status = ''
         self.description = ''
+        self.description_status = ''
         self.keywords = {}
+        self.content_analysis_status=''
         self.warnings = []
         self.translation = bytes.maketrans(punctuation.encode('utf-8'), str(' ' * len(punctuation)).encode('utf-8'))
         self.links = []
@@ -114,6 +121,43 @@ class Page():
         self.trigrams = Counter()
         self.stem_to_word = {}
         self.content_hash = None
+        self.image_tag_count = ''
+        self.encoding = ''
+        self.encoding_status=''
+        self.open_graph = {}
+        self.og_tags_status = ''
+        self.all_link = {}
+        self.email_list = []
+        self.email_security_status=''
+        self.html_type = ''
+        self.doctype_status=''
+        self.image_miss_tag = []
+        self.social_tags = []
+        self.meta_keywords = ''
+        self.dmarc_status = ''
+        self.html_lang = ''
+        self.language_status = ''
+        self.underscore_count = []
+        self.twitter_cards = {}
+        self.twitter_cards_status = ''
+        self.favicon = ''
+        self.favicon_status = ''
+        self.custom_error = ''
+        self.sitemap_status = {}
+        self.overall_score = 0
+        self.heading_status = ''
+        self.links_overall = {}
+        self.schema_type = []
+        self.schema_status=''
+        self.resolve_url = {}
+        self.resolve_url_status = ''
+        self.alt_attribute_status = ''
+        self.in_page_links_status = ''
+        self.xml_sitemaps_status = ''
+        self.discovered_pages_status=''
+        self.underscores_url_status = ''
+        self.canonical_tags=[]
+        self.canonical_tags_status = ''
 
         if analyze_headings:
             self.headings = {}
@@ -127,14 +171,57 @@ class Page():
 
         context = {
             'url': self.url,
+            'url_length': self.url_length,
+            'url_status':'neutral',
+            'url_parameter_status':'neutral',
             'title': self.title,
+            'title_status': self.title_status,
             'description': self.description,
-            'word_count': self.total_word_count,
-            'keywords': self.sort_freq_dist(self.keywords, limit=5),
-            'bigrams': self.bigrams,
-            'trigrams': self.trigrams,
-            'warnings': self.warnings,
-            'content_hash': self.content_hash
+            'description_status': self.description_status,
+            # 'word_count': self.total_word_count,
+            'content_analysis': self.sort_freq_dist(self.keywords, limit=4),
+            'content_analysis_status':'neutral',
+            # 'bigrams': self.bigrams,
+            # 'trigrams': self.trigrams,
+            # 'warnings': self.warnings,
+            # 'content_hash': self.content_hash,
+            'alt_attribute': self.image_miss_tag,
+            'image_tag_count': self.image_tag_count,
+            'alt_attribute_status': self.alt_attribute_status,
+            'encoding': self.encoding,
+            'encoding_status':self.encoding_status,
+            'schema_org': self.schema_type,
+            'schema_org_status':self.schema_status,
+            'open_graph_item': self.open_graph,
+            'og_tags_status': self.og_tags_status,
+            'twitter_item': self.twitter_cards,
+            'twitter_card_status': self.twitter_cards_status,
+            'all_link': self.all_link,
+            'over_all': self.links_overall,
+            'in_page_links_status': self.in_page_links_status,
+            'email_list': self.email_list,
+            'email_security_status':'neutral',
+            'doctype': self.html_type,
+            'doctype_status':'neutral',
+            'declared_language': self.html_lang,
+            'language_status': self.language_status,
+            'social_tags': self.social_tags,
+            'meta_keywords': self.meta_keywords,
+            'dmarc_status': self.dmarc_status,
+            'underscores_url': self.underscore_count,
+            'underscores_url_status': self.underscores_url_status,
+            'favicon': self.favicon,
+            'favicon_status': self.favicon_status,
+            'custom_404_status': self.custom_error,
+            'xml_sitemaps': self.sitemap_status,
+            'xml_sitemaps_status': self.xml_sitemaps_status,
+            'discovered_pages_status':'neutral',
+            'resolveurlarray': self.resolve_url,
+            'resolve_url_status': self.resolve_url_status,
+            'overall_score': self.overall_score,
+            'headings_status': self.heading_status,
+            'canonical_tags':self.canonical_tags,
+            'canonical_tags_status': self.canonical_tags_status
         }
 
         if self.analyze_headings:
@@ -145,30 +232,152 @@ class Page():
         return context
 
     def populate(self, bs):
+
         """
         Populates the instance variables from BeautifulSoup
         """
 
+        # feeds = bs.findAll(type='application/rss+xml') + bs.findAll(type='application/atom+xml')
+        # for feed in feeds:
+        #     href=feed.get('href')
+        #     print(feed)
+        self.url_length = len(self.url)
+        url_error = f'{self.url}/nonexistent_path'
+        error_res = requests.get(url_error)
+        if error_res.status_code == 404:
+            self.custom_error = 'good'
+        else:
+            self.custom_error = "bad"
+        parsed_url = urllib.parse.urlparse(self.url)
+        parsed_url = parsed_url.netloc
+        try:
+            favicon_bs = bs.find('link', attrs={'rel': re.compile("^(shortcut icon|icon)$", re.I)})
+            self.favicon = favicon_bs['href']
+            if 'www' or 'http' or 'https' not in self.favicon:
+                self.favicon = f'{parsed_url}/{self.favicon}'
+            else:
+               pass
+
+        except:
+            favicon_url = f'{self.url}/favicon.ico'
+            b = requests.get(favicon_url)
+            if b.status_code == 200:
+                self.favicon = favicon_url
+            else:
+                self.favicon = None
+        if self.favicon != None:
+            self.overall_score = self.overall_score + 2
+            self.favicon_status = 'good'
+        else:
+            self.favicon_status = 'bad'
+
+        try:
+            self.html_lang = bs.html['lang']
+        except:
+            self.html_lang = ''
+        if self.html_lang != '':
+            self.overall_score = self.overall_score + 2
+            self.language_status = 'good'
+        else:
+            self.language_status = 'bad'
+        temp_domain = self.base_domain.netloc
+        analyse_domain = temp_domain.replace('www.', '')
+        try:
+            test_dmarc = dns.resolver.resolve('_dmarc.' + analyse_domain, 'TXT')
+            for dns_data in test_dmarc:
+                if 'DMARC1' in str(dns_data):
+                    self.dmarc_status = 'good'
+        except:
+            self.dmarc_status = 'bad'
         try:
             self.title = bs.title.text
         except AttributeError:
-            self.title = 'No Title'
+            pass
+        if len(self.title) >= 40 and len(self.title) <= 40:
+            self.overall_score = self.overall_score + 6
+            self.title_status = 'good'
+        elif len(self.title) <= 40:
+            self.overall_score = self.overall_score + 4
+            self.title_status = 'improve'
+        elif len(self.title) >= 60:
+            self.title_status = 'bad'
+        try:
+            items = [item for item in bs.contents if isinstance(item, bs4.Doctype)]
+            self.html_type = items[0]
+        except:
+            self.html_type = 'default html'
+
 
         descr = bs.findAll('meta', attrs={'name': 'description'})
 
         if len(descr) > 0:
             self.description = descr[0].get('content')
+        try:
+            if len(self.description) >= 140 and len(self.description) <= 156:
+                self.overall_score = self.overall_score + 6
+                self.description_status = 'good'
+            elif len(self.description) >= 50 and len(self.description) <= 140:
+                self.overall_score = self.overall_score + 4
+                self.description_status = 'Improve'
+            elif len(self.description) >= 156 or len(self.description) <= 50:
+                self.description_status = 'bad'
+        except:
+            pass
 
-        keywords = bs.findAll('meta', attrs={'name': 'keywords'})
-
-        if len(keywords) > 0:
-            self.warn(f'Keywords should be avoided as they are a spam indicator and no longer used by Search Engines: {keywords}')
+        keywords = bs.find('meta', attrs={'name': 'keywords'})
+        try:
+            self.meta_keywords = (keywords.get('content'))
+        except:
+            self.meta_keywords = None
+        if keywords == None:
+            pass
 
     def analyze_heading_tags(self, bs):
         """
         Analyze the heading tags and populate the headings
         """
+        json_schema = bs.find('script', attrs={'type': 'application/ld+json'})
+        if json_schema != None:
+            json_dat = json.loads(json_schema.contents[0])
 
+            try:
+                sch_type = json_dat['@type']
+                self.schema_type.append(sch_type)
+            except:
+                sch_type = (json_dat['@graph'][0]['@type'])
+                self.schema_type.extend(sch_type)
+        else:
+            pass
+        if self.schema_type != []:
+            self.overall_score = self.overall_score + 4
+            self.schema_status = 'good'
+        else:
+            self.schema_status = 'bad'
+        try:
+            site = bs.find('meta', attrs={'name': re.compile(r'^twitter:site')})
+            self.twitter_cards['site'] = site.get('content')
+        except:
+            self.twitter_cards['site'] = None
+        try:
+            title = bs.find('meta', attrs={'name': re.compile(r'^twitter:title')})
+            self.twitter_cards['title'] = title.get('content')
+        except:
+            self.twitter_cards['title'] = None
+        try:
+            description = bs.find('meta', attrs={'name': re.compile(r'^twitter:description')})
+            self.twitter_cards['description'] = description.get('content')
+        except:
+            self.twitter_cards['description'] = None
+        try:
+            image = bs.find('meta', attrs={'name': re.compile(r'^twitter:image')})
+            self.twitter_cards['image'] = image.get('content')
+        except:
+            self.twitter_cards['image'] = None
+        if self.twitter_cards['site'] and self.twitter_cards['title'] and self.twitter_cards['description'] != None:
+            self.overall_score = self.overall_score + 2
+            self.twitter_cards_status = 'good'
+        else:
+            self.twitter_cards_status = 'bad'
         try:
             dom = lh.fromstring(str(bs))
         except ValueError as _:
@@ -182,15 +391,66 @@ class Page():
         """
         Analyze additional tags and populate the additional info
         """
-
+        robots_url = f'{self.url}robots.txt'
+        rp = urllib.robotparser.RobotFileParser()
+        rp.set_url(robots_url)
+        rp.read()
+        sitemap_var = rp.site_maps()
+        if sitemap_var == None:
+            sitemap_checker = ['wp-sitemap.xml', 'sitemap_index.xml', 'sitemap.xml']
+            sitemap_true = []
+            for i in sitemap_checker:
+                sitemap1 = f'{self.url}/{i}'
+                user_agent = UserAgent()
+                user_agent = user_agent.random
+                user_agent = {"User-Agent": user_agent}
+                a = requests.get(sitemap1, headers=user_agent)
+                if a.status_code == 200:
+                    sitemap_true.append(sitemap1)
+                    break
+                else:
+                    pass
+            if [] != sitemap_true:
+                url_list1 = adv.sitemap_to_df(sitemap_true[0])
+                try:
+                    url_sitemap1 = len(url_list1['loc'].tolist())
+                except:
+                    url_sitemap1 = 0
+                self.sitemap_status['sitemap'] = sitemap_true[0]
+                self.sitemap_status['url_found'] = url_sitemap1
+                self.sitemap_status['present_in_robots'] = False
+            else:
+                self.sitemap_status['sitemap'] = None
+                self.sitemap_status['url_found'] = 0
+                self.sitemap_status['present_in_robots'] = False
+        else:
+            url_list = adv.sitemap_to_df(sitemap_var[0])
+            try:
+                url_sitemap = len(url_list['loc'].tolist())
+            except:
+                url_sitemap = 0
+            self.sitemap_status['sitemap'] = sitemap_var[0]
+            self.sitemap_status['url_found'] = url_sitemap
+            self.sitemap_status['present_in_robots'] = True
+        if self.sitemap_status['sitemap'] != None:
+            self.overall_score = self.overall_score + 6
+            self.xml_sitemaps_status = 'good'
+        else:
+            self.xml_sitemaps_status = 'bad'
         try:
             dom = lh.fromstring(str(bs))
         except ValueError as _:
             dom = lh.fromstring(bs.encode('utf-8'))
         for tag, xpath in ADDITIONAL_TAGS_XPATHS.items():
             value = dom.xpath(xpath)
-            if value:
-                self.additional_info.update({tag: value})
+            self.additional_info.update({tag: value})
+        if self.additional_info['canonical'] !=[]:
+            self.overall_score = self.overall_score + 6
+            self.canonical_tags_status = 'good'
+            self.canonical_tags=self.additional_info['canonical']
+        else:
+            self.canonical_tags_status = 'bad'
+
 
     def analyze(self, raw_html=None):
         """
@@ -201,7 +461,7 @@ class Page():
             valid_prefixes = []
 
             # only allow http:// https:// and //
-            for s in ['http://', 'https://', '//',]:
+            for s in ['http://', 'https://', '//', ]:
                 valid_prefixes.append(self.url.startswith(s))
 
             if True not in valid_prefixes:
@@ -225,24 +485,28 @@ class Page():
 
             if 'content-type' in page.headers:
                 encoding = page.headers['content-type'].split('charset=')[-1]
+                self.encoding = True
 
             if encoding.lower() not in ('text/html', 'text/plain', 'utf-8'):
                 # there is no unicode function in Python3
                 # try:
                 #     raw_html = unicode(page.read(), encoding)
                 # except:
-                self.warn(f'Can not read {encoding}')
+                self.encoding = False
                 return
             else:
                 raw_html = page.data.decode('utf-8')
-
+            if self.encoding == True:
+                self.encoding_status = 'good'
+            else:
+                self.encoding_status = 'bad'
         self.content_hash = hashlib.sha1(raw_html.encode('utf-8')).hexdigest()
 
         # remove comments, they screw with BeautifulSoup
         clean_html = re.sub(r'<!--.*?-->', r'', raw_html, flags=re.DOTALL)
 
-        soup_lower = BeautifulSoup(clean_html.lower(), 'html.parser') #.encode('utf-8')
-        soup_unmodified = BeautifulSoup(clean_html, 'html.parser') #.encode('utf-8')
+        soup_lower = BeautifulSoup(clean_html.lower(), 'html.parser')  # .encode('utf-8')
+        soup_unmodified = BeautifulSoup(clean_html, 'html.parser')  # .encode('utf-8')
 
         texts = soup_lower.findAll(text=True)
         visible_text = [w for w in filter(self.visible_tags, texts)]
@@ -330,18 +594,79 @@ class Page():
         """
         Validate open graph tags
         """
-        og_title = bs.findAll('meta', attrs={'property': 'og:title'})
-        og_description = bs.findAll('meta', attrs={'property': 'og:description'})
-        og_image = bs.findAll('meta', attrs={'property': 'og:image'})
 
-        if len(og_title) == 0:
-            self.warn(u'Missing og:title')
+        parsed_url = urllib.parse.urlparse(self.url)
+        parsed_url = parsed_url.netloc
 
-        if len(og_description) == 0:
-            self.warn(u'Missing og:description')
+        internal_links = []
+        for a in bs.find_all('a', href=True):
+            if len(a['href'].strip()) > 1 and a['href'][0] != '#' and 'javascript:' \
+                    not in a['href'].strip() and 'mailto:' not in a['href'].strip() and 'tel:' not in a['href'].strip():
+                if parsed_url in a["href"] or a["href"].startswith("/") or a['href'].endswith('.html'):
+                    if urlparse(self.url).netloc.lower() not in a['href']:
+                        a["href"] = f'{urlparse(self.url).netloc.lower()}/{a["href"]}'
 
-        if len(og_image) == 0:
-            self.warn(u'Missing og:image')
+
+                        internal_links.append(
+                            [a.get_text(), a["href"].replace('//','/'), "nofollow"] if "nofollow" in str(a) else [a.get_text(), a["href"],
+                                                                                               "follow"])
+                    else:
+                        internal_links.append(
+                            [a.get_text(), a["href"], "nofollow"] if "nofollow" in str(a) else [a.get_text(), a["href"],
+                                                                                                "follow"])
+        #
+        if len(internal_links) <= 200:
+            self.overall_score = self.overall_score + 4
+            self.in_page_links_status = 'good'
+        else:
+            self.in_page_links_status = 'bad'
+
+        external_links = []
+        for a in bs.find_all('a', href=True):
+            if parsed_url not in a["href"] and not a["href"].startswith("/") and not a["href"].startswith("./") and not \
+            a["href"].startswith("#") and not a['href'].endswith('.html'):
+                if 'http' in a['href'].strip() or 'https' in a['href'].strip():
+                    external_links.append(
+                        [a.get_text(), a["href"], "nofollow"] if "nofollow" in str(a) else [a.get_text(), a["href"],
+                                                                                            "follow"])
+        self.links_overall['Internal_link'] = internal_links
+        self.links_overall['External_link'] = external_links
+        og_title = bs.find('meta', attrs={'property': 'og:title'})
+        og_description = bs.find('meta', attrs={'property': 'og:description'})
+        og_image = bs.find('meta', attrs={'property': 'og:image'})
+        og_site_name = bs.find('meta', attrs={'property': 'og:site_name'})
+        og_url = bs.find('meta', attrs={'property': 'og:url'})
+        og_type = bs.find('meta', attrs={'property': 'og:type'})
+        if (og_title) == None:
+            self.open_graph['og_title'] = None
+        else:
+            self.open_graph['og_title'] = (og_title.get('content'))
+        if (og_description) == None:
+            self.open_graph['og_description'] = None
+        else:
+            self.open_graph['og_description'] = og_description.get('content')
+        if (og_image) == None:
+            self.open_graph['og_image'] = None
+        else:
+            self.open_graph['og_image'] = og_image.get('content')
+        if (og_site_name) == None:
+            self.open_graph['og_site_name'] = None
+        else:
+            self.open_graph['og_site_name'] = og_site_name.get('content')
+        if (og_url) == None:
+            self.open_graph['og_url'] = None
+        else:
+            self.open_graph['og_url'] = og_url.get('content')
+        if (og_type) == None:
+            self.open_graph['og_type'] = None
+        else:
+            self.open_graph['og_type'] = og_type.get('content')
+        if self.open_graph['og_site_name'] and self.open_graph['og_title'] and self.open_graph[
+            'og_description'] != None:
+            self.overall_score = self.overall_score + 2
+            self.og_tags_status = 'good'
+        else:
+            self.og_tags_status = 'bad'
 
     def analyze_title(self):
         """
@@ -354,6 +679,33 @@ class Page():
 
         # calculate the length of the title once
         length = len(t)
+
+        domain = urlparse(self.url).netloc
+        try:
+            domain_parsed = domain.replace('www.', '')
+        except:
+            domain_parsed = domain
+        url1 = f"https://www.{domain_parsed}"
+        url2 = f'http://www.{domain_parsed}'
+        url3 = f'https://{domain_parsed}'
+        url4 = f'http://{domain_parsed}'
+        list_url = [url1, url2, url3, url4]
+        urls_list = []
+        status_code_list = []
+        not_reslved = []
+        for i in list_url:
+            req = requests.get(i)
+            not_reslved.append(i)
+            status_code_list.append(req.status_code)
+            urls_list.append(req.url)
+        self.resolve_url['url'] = not_reslved
+        self.resolve_url['status_code'] = status_code_list
+        self.resolve_url['redirected_url'] = urls_list
+        if 403 not in status_code_list:
+            self.overall_score = self.overall_score + 6
+            self.resolve_url_status = 'good'
+        else:
+            self.resolve_url_status = 'bad'
 
         if length == 0:
             self.warn(u'Missing title tag')
@@ -376,7 +728,7 @@ class Page():
         length = len(d)
 
         if length == 0:
-            self.warn(u'Missing description')
+            self.description = 'Missing description'
             return
         elif length < 140:
             self.warn(u'Description is too short (less than 140 characters): {0}'.format(d))
@@ -393,8 +745,13 @@ class Page():
         """
         Verifies that each img has an alt and title
         """
-        images = bs.find_all('img')
 
+        images = bs.find_all('img')
+        try:
+            images_len = len(images)
+            self.image_tag_count = images_len
+        except:
+            self.image_tag_count = 0
         for image in images:
             src = ''
             if 'src' in image:
@@ -405,32 +762,56 @@ class Page():
                 src = image
 
             if len(image.get('alt', '')) == 0:
-                self.warn('Image missing alt tag: {0}'.format(src))
+                try:
+                    self.image_miss_tag.append(src.get('src'))
+                except:
+                    self.image_miss_tag.append(src.get('data-src'))
+        if self.image_miss_tag == []:
+            self.overall_score = self.overall_score + 4
+            self.alt_attribute_status = 'good'
+        else:
+            self.alt_attribute_status = 'bad'
 
     def analyze_h1_tags(self, bs):
         """
         Make sure each page has at least one H1 tag
         """
+        try:
+            email_tags = re.compile(r'([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+){0,}')
+            self.email_list.extend(set([x for x in bs.strings if email_tags.search(x).group()]))
+        except:
+          pass
         htags = bs.find_all('h1')
 
         if len(htags) == 0:
             self.warn('Each page should have at least one h1 tag')
+        h1_tag_val = []
+        for i in htags:
+            h1_tag_val.append(i.text)
+        if len(htags) != 0 and len(h1_tag_val) == 1:
+            self.overall_score = self.overall_score + 4
+            self.heading_status = 'good'
+        else:
+            self.heading_status = 'bad'
 
     def analyze_a_tags(self, bs):
         """
         Add any new links (that we didn't find in the sitemap)
         """
         anchors = bs.find_all('a', href=True)
-
+        url_list = []
+        url_title = []
         for tag in anchors:
             tag_href = tag['href']
             tag_text = tag.text.lower().strip()
+            url_title.append(tag_text)
+            url_list.append(tag_href)
 
             if len(tag.get('title', '')) == 0:
-                self.warn('Anchor missing title tag: {0}'.format(tag_href))
+                continue
 
             if tag_text in ['click here', 'page', 'article']:
-                self.warn('Anchor text contains generic text: {0}'.format(tag_text))
+                continue
 
             if self.base_domain.netloc not in tag_href and ':' in tag_href:
                 continue
@@ -448,6 +829,21 @@ class Page():
                 modified_url = modified_url[:modified_url.rindex('#')]
 
             self.links.append(modified_url)
+        for i in url_list:
+            if "_" in i:
+                self.underscore_count.append(i)
+            else:
+                pass
+        if self.underscore_count == []:
+            self.overall_score = self.overall_score + 2
+            self.underscores_url_status = 'good'
+        else:
+            self.underscores_url_status = 'bad'
+        self.all_link = len(url_list)
+
+        subs = ['facebook', 'instagram', 'twitter', 'linkedin']
+        social_tag = [s for s in url_list if any(i in s for i in subs)]
+        self.social_tags.extend(social_tag)
 
     def rel_to_abs_url(self, link):
         if ':' in link:
